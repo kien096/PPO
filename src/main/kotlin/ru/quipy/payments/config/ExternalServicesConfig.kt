@@ -11,6 +11,7 @@ import java.time.Duration
 class ExternalServicesConfig {
     companion object {
         const val PRIMARY_PAYMENT_BEAN = "PRIMARY_PAYMENT_BEAN"
+        // const val SECONDARY_PAYMENT_BEAN = "SECONDARY_PAYMENT_BEAN"
 
         // Ниже приведены готовые конфигурации нескольких аккаунтов провайдера оплаты.
         // Заметьте, что каждый аккаунт обладает своими характеристиками и стоимостью вызова.
@@ -52,9 +53,25 @@ class ExternalServicesConfig {
         )
     }
 
+    
+    // @Bean(PRIMARY_PAYMENT_BEAN)
+    // fun fastExternalService() = 
+    //     PaymentExternalServiceImpl(
+    //         accountProps_2,
+
+    //         )
+    // @Bean(PRIMARY_PAYMENT_BEAN)
+    // fun primaryExternalService() = 
+    //     PaymentExternalServiceImpl(
+    //         accountProps_2,
+    //         )
+    // @Bean(SECONDARY_PAYMENT_BEAN)
+    // fun secondaryExternalService() = 
+    //     PaymentExternalServiceImpl(
+    //         accountProps_1,
+    //         )
     @Bean(PRIMARY_PAYMENT_BEAN)
-    fun fastExternalService() =
-        PaymentExternalServiceImpl(
-            accountProps_4,
-        )
+    fun paymentService(): PaymentExternalServiceImpl {
+        return PaymentExternalServiceImpl(accountProps_1, accountProps_2)
+    }
 }
