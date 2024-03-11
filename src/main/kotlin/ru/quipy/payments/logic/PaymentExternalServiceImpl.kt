@@ -11,17 +11,19 @@ import java.net.SocketTimeoutException
 import java.time.Duration
 import java.util.*
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.math.min
+import java.util.concurrent.atomic.AtomicLong
+
 
 class PaymentExternalServiceImpl(
-    private val accountProps1: ExternalServiceProperties, 
-    private val accountProps2: ExternalServiceProperties  
+    private val accountProps1: ExternalServiceProperties,
+    private val accountProps2: ExternalServiceProperties
 ) : PaymentExternalService {
-
-    // private var lastUsedAccount: ExternalServiceProperties? = null
 
     companion object {
         val logger = LoggerFactory.getLogger(PaymentExternalServiceImpl::class.java)
-        val paymentOperationTimeout = Duration.ofSeconds(80)
+        val paymentOperationTimeout = Duration.ofSeconds(80).toMillis()
         val emptyBody = RequestBody.create(null, ByteArray(0))
         val mapper = ObjectMapper().registerKotlinModule()
     }
@@ -29,76 +31,67 @@ class PaymentExternalServiceImpl(
     @Autowired
     private lateinit var paymentESService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>
 
-    private val client = OkHttpClient.Builder()
-        .dispatcher(Dispatcher(Executors.newSingleThreadExecutor()))
-        .build()
+    private val client = OkHttpClient.Builder().dispatcher(Dispatcher(Executors.newSingleThreadExecutor())).build()
 
-    private fun calculateSpeed(account: ExternalServiceProperties): Double {
-        val p = account.parallelRequests.toDouble()
-        val r = account.rateLimitPerSec.toDouble()
-        val a = account.request95thPercentileProcessingTime.toMillis().toDouble() / 1000.0 // Convert milliseconds to seconds for 'A'
-        // The effective rate limited by R and A
-        val effectiveR = r / a
-        // The speed is defined as the minimum of P and effective R
-        return minOf(p, effectiveR)
+    // Atomic counters for window control
+    private val activeRequestsAccount1 = AtomicInteger(0)
+    private val activeRequestsAccount2 = AtomicInteger(0)
+
+    // Rate limit tracking
+    private val lastRequestTimeAccount1 = AtomicLong(0)
+    private val lastRequestTimeAccount2 = AtomicLong(0)
+
+    private fun canMakeRequest(account: ExternalServiceProperties, lastRequestTime: AtomicLong): Boolean {
+        val currentTime = System.currentTimeMillis()
+        val rateLimitInterval = 1000L / account.rateLimitPerSec // ms per request
+        return currentTime - lastRequestTime.get() >= rateLimitInterval
     }
-
-    private fun estimateProcessingTime(account: ExternalServiceProperties): Long {
-        val speed = calculateSpeed(account)
-        // Assuming the service processes one request at a time, the time to process one request
-        return (1 / speed * 1000).toLong() // Convert seconds to milliseconds
-    }
-
-    // private fun selectAccountForPayment(startTime: Long): ExternalServiceProperties? {
-    //     val elapsedTime = System.currentTimeMillis() - startTime
-    //     val remainingTimeForSLA = SLA_THRESHOLD - elapsedTime
-
-    //     val timeForRequest1 = estimateProcessingTime(accountProps1)
-    //     val timeForRequest2 = estimateProcessingTime(accountProps2)
-
-    //     // Prioritize using account 2 (cheaper) if within SLA; switch to account 1 otherwise
-    //     return when {
-    //         elapsedTime + timeForRequest2 <= remainingTimeForSLA -> accountProps2
-    //         elapsedTime + timeForRequest1 <= remainingTimeForSLA -> accountProps1
-    //         else -> null // Do not send the request if neither account can meet the SLA
-    //     }
-    // }
 
     private fun selectAccountForPayment(startTime: Long): ExternalServiceProperties {
         val timeElapsed = System.currentTimeMillis() - startTime
-        val timeLeftForSLA = paymentOperationTimeout.seconds * 1000 - timeElapsed
+        val timeLeftForSLA = paymentOperationTimeout - timeElapsed
 
-        val speed1 = estimateProcessingTime(accountProps1)
-        val speed2 = estimateProcessingTime(accountProps2)
+        // Prioritize using account 2 if within SLA and respects window control and rate limit; switch to account 1 otherwise.
+        val useAccount2 = activeRequestsAccount2.get() < accountProps2.parallelRequests &&
+                          canMakeRequest(accountProps2, lastRequestTimeAccount2) &&
+                          accountProps2.request95thPercentileProcessingTime.toMillis() <= timeLeftForSLA
 
-        val slaMetAccount2 = accountProps2.request95thPercentileProcessingTime.toMillis() <= timeLeftForSLA
-        val slaMetAccount1 = accountProps1.request95thPercentileProcessingTime.toMillis() <= timeLeftForSLA
+        val useAccount1 = activeRequestsAccount1.get() < accountProps1.parallelRequests &&
+                          canMakeRequest(accountProps1, lastRequestTimeAccount1) &&
+                          accountProps1.request95thPercentileProcessingTime.toMillis() <= timeLeftForSLA
 
         return when {
-            slaMetAccount2 -> accountProps2
-            slaMetAccount1 -> accountProps1
-            else -> if (speed1 > speed2) accountProps1 else accountProps2
+            useAccount2 -> {
+                lastRequestTimeAccount2.set(System.currentTimeMillis())
+                activeRequestsAccount2.incrementAndGet()
+                accountProps2
+            }
+            useAccount1 -> {
+                lastRequestTimeAccount1.set(System.currentTimeMillis())
+                activeRequestsAccount1.incrementAndGet()
+                accountProps1
+            }
+            else -> {
+                // Fallback logic if neither account is viable at this moment
+                // This may be to retry after a delay or to reject the request upfront
+                if (accountProps2.request95thPercentileProcessingTime.toMillis() < accountProps1.request95thPercentileProcessingTime.toMillis()) {
+                    accountProps2
+                } else {
+                    accountProps1
+                }
+            }
         }
     }
 
     override fun submitPaymentRequest(paymentId: UUID, amount: Int, paymentStartedAt: Long) {
         val selectedAccount = selectAccountForPayment(paymentStartedAt)
-        // if (selectedAccount == null) {
-        //     logger.error("Unable to process payment $paymentId. Neither account can meet the SLA.")
-        //     return
-        // }
 
-        // lastUsedAccount = selectedAccount
         logger.info("[${selectedAccount.accountName}] Selected for payment $paymentId, elapsed time: ${System.currentTimeMillis() - paymentStartedAt} ms")
         
         val transactionId = UUID.randomUUID()
         logger.info("[${selectedAccount.accountName}] Submit for $paymentId, txId: $transactionId")
 
-        val request = Request.Builder().run {
-            url("http://localhost:1234/external/process?serviceName=${selectedAccount.serviceName}&accountName=${selectedAccount.accountName}&transactionId=$transactionId")
-            post(emptyBody)
-            build()
-        }
+        val request = Request.Builder().url("http://localhost:1234/external/process?serviceName=${selectedAccount.serviceName}&accountName=${selectedAccount.accountName}&transactionId=$transactionId").post(emptyBody).build()
         try {
             client.newCall(request).execute().use { response ->
                 val body = try {
@@ -110,30 +103,32 @@ class PaymentExternalServiceImpl(
 
                 logger.warn("[${selectedAccount.accountName}] Payment processed for txId: $transactionId, payment: $paymentId, succeeded: ${body.result}, message: ${body.message}")
 
-                // Здесь мы обновляем состояние оплаты в зависимости от результата в базе данных оплат.
-                // Это требуется сделать ВО ВСЕХ ИСХОДАХ (успешная оплата / неуспешная / ошибочная ситуация)
                 paymentESService.update(paymentId) {
-                    it.logProcessing(body.result, now(), transactionId, reason = body.message)
+                    it.logProcessing(body.result, System.currentTimeMillis(), transactionId, reason = body.message)
                 }
             }
         } catch (e: Exception) {
             when (e) {
                 is SocketTimeoutException -> {
                     paymentESService.update(paymentId) {
-                        it.logProcessing(false, now(), transactionId, reason = "Request timeout.")
+                        it.logProcessing(false, System.currentTimeMillis(), transactionId, reason = "Request timeout.")
                     }
                 }
-
                 else -> {
                     logger.error("[${selectedAccount.accountName}] Payment failed for txId: $transactionId, payment: $paymentId", e)
-
                     paymentESService.update(paymentId) {
-                        it.logProcessing(false, now(), transactionId, reason = e.message)
+                        it.logProcessing(false, System.currentTimeMillis(), transactionId, reason = e.message)
                     }
                 }
+            }
+        } finally {
+            if (selectedAccount == accountProps1) {
+                activeRequestsAccount1.decrementAndGet()
+            } else {
+                activeRequestsAccount2.decrementAndGet()
             }
         }
     }
 }
 
-public fun now() = System.currentTimeMillis()
+fun now() = System.currentTimeMillis()
