@@ -11,6 +11,7 @@ import java.time.Duration
 class ExternalServicesConfig {
     companion object {
         const val PRIMARY_PAYMENT_BEAN = "PRIMARY_PAYMENT_BEAN"
+        // const val SECONDARY_PAYMENT_BEAN = "SECONDARY_PAYMENT_BEAN"
 
         // Ниже приведены готовые конфигурации нескольких аккаунтов провайдера оплаты.
         // Заметьте, что каждый аккаунт обладает своими характеристиками и стоимостью вызова.
@@ -22,6 +23,7 @@ class ExternalServicesConfig {
             parallelRequests = 10000,
             rateLimitPerSec = 100,
             request95thPercentileProcessingTime = Duration.ofMillis(1000),
+            // callCost = 100,
         )
 
         private val accountProps_2 = ExternalServiceProperties(
@@ -31,6 +33,7 @@ class ExternalServicesConfig {
             parallelRequests = 100,
             rateLimitPerSec = 30,
             request95thPercentileProcessingTime = Duration.ofMillis(10_000),
+            // callCost = 70,
         )
 
         private val accountProps_3 = ExternalServiceProperties(
@@ -40,6 +43,7 @@ class ExternalServicesConfig {
             parallelRequests = 30,
             rateLimitPerSec = 8,
             request95thPercentileProcessingTime = Duration.ofMillis(10_000),
+            // callCost = 40,
         )
 
         // Call costs 30
@@ -49,12 +53,13 @@ class ExternalServicesConfig {
             parallelRequests = 8,
             rateLimitPerSec = 5,
             request95thPercentileProcessingTime = Duration.ofMillis(10_000),
+            // callCost = 30,
         )
     }
 
+    
     @Bean(PRIMARY_PAYMENT_BEAN)
-    fun fastExternalService() =
-        PaymentExternalServiceImpl(
-            accountProps_4,
-        )
+    fun paymentService(): PaymentExternalServiceImpl {
+        return PaymentExternalServiceImpl(accountProps_1, accountProps_2)
+    }
 }
