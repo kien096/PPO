@@ -15,8 +15,8 @@ import java.io.IOException
 
 
 class PaymentExternalServiceImpl(
-    private val accountProps1: ExternalServiceProperties,
-    private val accountProps2: ExternalServiceProperties
+    private val accountProps: ExternalServiceProperties, 
+    private val fallbackService: PaymentExternalServiceImpl? 
 ) : PaymentExternalService {
 
     private var lastUsedAccount: ExternalServiceProperties? = null
@@ -36,12 +36,8 @@ class PaymentExternalServiceImpl(
         .build()
 
     private fun selectAccountForPayment(): ExternalServiceProperties {
-        // Logic to select the account based on SLA or other criteria
-        return if (lastUsedAccount == accountProps1) {
-            accountProps2
-        } else {
-            accountProps1
-        }
+
+        return accountProps
     }
 
     override fun submitPaymentRequest(paymentId: UUID, amount: Int, paymentStartedAt: Long) {
