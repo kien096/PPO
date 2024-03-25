@@ -60,6 +60,11 @@ class ExternalServicesConfig {
     
     @Bean(PRIMARY_PAYMENT_BEAN)
     fun paymentService(): PaymentExternalServiceImpl {
-        return PaymentExternalServiceImpl(accountProps_1, accountProps_2)
+        return PaymentExternalServiceImpl(
+            accountProps_4, 
+            accountProps_3, 
+            accountProps_2
+            // accountProps_1
+        )
     }
 }
